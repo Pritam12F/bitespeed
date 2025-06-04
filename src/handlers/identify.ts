@@ -53,9 +53,6 @@ export const identifyHandler = async (req: Request, res: Response) => {
         where: { id: matchingContacts[0].primaryId! },
       }));
 
-    // Ensure all other contacts are SECONDARY and point to the correct PRIMARY
-    const secondaryContactsToCreate = [];
-
     const alreadyExists = matchingContacts.find(
       (c) => c.email === email && c.phoneNumber === phoneNumber
     );
@@ -71,36 +68,89 @@ export const identifyHandler = async (req: Request, res: Response) => {
         },
       });
       matchingContacts.push(secondary);
+
+      res.json({
+        contact: {
+          primaryContactId: primaryContact!.id,
+          emails: [
+            primaryContact!.email,
+            ...Array.from(
+              new Set(
+                matchingContacts
+                  .filter((c) => c.linkPrecedence === "SECONDARY")
+                  .map((c) => c.email)
+              )
+            ).filter((x) => x != null),
+            ,
+          ],
+          phoneNumbers: [
+            primaryContact!.phoneNumber,
+            ...Array.from(
+              new Set(
+                matchingContacts
+                  .filter((c) => c.linkPrecedence === "SECONDARY")
+                  .map((c) => c.phoneNumber)
+              )
+            ),
+          ].filter((x) => x != null),
+          secondaryContactIds: matchingContacts
+            .filter((c) => c.linkPrecedence === "SECONDARY")
+            .map((c) => c.id),
+        },
+      });
+
+      return;
     }
 
-    // Normalize: Get all linked contacts
-    const allLinkedContacts = await db.contact.findMany({
+    const emailContact = await db.contact.findMany({
       where: {
-        OR: [{ id: primaryContact!.id }, { primaryId: primaryContact!.id }],
+        email: email,
       },
     });
 
-    const uniqueEmails = Array.from(
-      new Set(
-        allLinkedContacts
-          .filter((x) => x.linkPrecedence === "SECONDARY")
-          .map((c) => c.email)
-      )
-    ).filter((x) => x != null);
+    const phoneContact = await db.contact.findMany({
+      where: {
+        phoneNumber: phoneNumber,
+      },
+    });
+    //TODO: Implement logic to check if email and phone are from two different primary contacts
 
-    const uniquePhones = Array.from(
-      new Set(
-        allLinkedContacts
-          .filter((x) => x.linkPrecedence === "SECONDARY")
-          .map((c) => c.phoneNumber)
-      )
-    ).filter((x) => x != null);
+    if (emailContact.length > 0 && phoneContact.length > 0) {
+    }
+
+    const allLinkedContacts = await db.contact.findMany({
+      where: {
+        primaryId: primaryContact!.id,
+      },
+    });
+
+    const uniqueEmails = [
+      primaryContact?.email,
+      ...Array.from(
+        new Set(
+          allLinkedContacts
+            .filter((x) => x.linkPrecedence === "SECONDARY")
+            .map((c) => c.email)
+        )
+      ).filter((x) => x != null),
+    ];
+
+    const uniquePhones = [
+      primaryContact?.phoneNumber,
+      ...Array.from(
+        new Set(
+          allLinkedContacts
+            .filter((x) => x.linkPrecedence === "SECONDARY")
+            .map((c) => c.phoneNumber)
+        )
+      ).filter((x) => x != null),
+    ];
 
     const secondaryIds = allLinkedContacts
       .filter((c) => c.linkPrecedence === "SECONDARY")
       .map((c) => c.id);
 
-    return res.json({
+    res.json({
       contact: {
         primaryContactId: primaryContact!.id,
         emails: uniqueEmails,
