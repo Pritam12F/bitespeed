@@ -6,93 +6,110 @@ export const identifyHandler = async (req: Request, res: Response) => {
   const { data, success } = IdentifySchema.safeParse(req.body);
 
   if (!success) {
-    res.status(400).json({
-      message: "Invalid inputs",
-    });
+    res.status(400).json({ message: "Invalid inputs" });
+    return;
+  }
+
+  const { email, phoneNumber } = data;
+
+  if (!email && !phoneNumber) {
+    res.status(400).json({ message: "No inputs provided" });
 
     return;
   }
 
-  if (!data.email && data.phoneNumber) {
-    res.status(401).json({
-      message: "No inputs provided",
-    });
-  }
-
   try {
-    const contactInDb = await db.contact.findFirst({
+    const matchingContacts = await db.contact.findMany({
       where: {
-        OR: [
-          {
-            phoneNumber: data.phoneNumber,
-          },
-          {
-            email: data.email,
-          },
-        ],
+        OR: [{ email: email }, { phoneNumber: phoneNumber }],
       },
     });
 
-    if (!contactInDb) {
+    if (matchingContacts.length === 0) {
       const newContact = await db.contact.create({
         data: {
-          phoneNumber: data.phoneNumber,
-          email: data.email,
+          email,
+          phoneNumber,
           linkPrecedence: "PRIMARY",
         },
       });
 
-      const contact = {
-        primaryContactId: newContact.id,
-        emails: [newContact.email],
-        phoneNumbers: [newContact.phoneNumber],
-        secondaryContactIds: [],
-      };
-
-      res.json({ contact });
+      res.json({
+        contact: {
+          primaryContactId: newContact.id,
+          emails: [newContact.email],
+          phoneNumbers: [newContact.phoneNumber],
+          secondaryContactIds: [],
+        },
+      });
 
       return;
-    } else {
-      const allContacts = await db.contact.findMany();
-
-      const emailExists = allContacts.filter((x) => x.email === data.email);
-      const phoneExists = allContacts.filter(
-        (x) => x.phoneNumber === data.phoneNumber
-      );
-
-      if (!emailExists.length) {
-        await db.contact.create({
-          data: {
-            phoneNumber: data.phoneNumber,
-            email: data.email,
-            linkPrecedence: "SECONDARY",
-            primaryId:
-              contactInDb.linkPrecedence === "PRIMARY"
-                ? contactInDb.id
-                : contactInDb.primaryId,
-          },
-        });
-      }
-
-      if (!phoneExists.length) {
-        await db.contact.create({
-          data: {
-            phoneNumber: data.phoneNumber,
-            email: data.email,
-            linkPrecedence: "SECONDARY",
-            primaryId:
-              contactInDb.linkPrecedence === "PRIMARY"
-                ? contactInDb.id
-                : contactInDb.primaryId,
-          },
-        });
-      }
     }
+
+    // Find the earliest created PRIMARY contact among the matching ones
+    const primaryContact =
+      matchingContacts.find((c) => c.linkPrecedence === "PRIMARY") ??
+      (await db.contact.findUnique({
+        where: { id: matchingContacts[0].primaryId! },
+      }));
+
+    // Ensure all other contacts are SECONDARY and point to the correct PRIMARY
+    const secondaryContactsToCreate = [];
+
+    const alreadyExists = matchingContacts.find(
+      (c) => c.email === email && c.phoneNumber === phoneNumber
+    );
+
+    if (!alreadyExists) {
+      // Create a secondary contact only if exact match doesn't exist
+      const secondary = await db.contact.create({
+        data: {
+          email,
+          phoneNumber,
+          linkPrecedence: "SECONDARY",
+          primaryId: primaryContact!.id,
+        },
+      });
+      matchingContacts.push(secondary);
+    }
+
+    // Normalize: Get all linked contacts
+    const allLinkedContacts = await db.contact.findMany({
+      where: {
+        OR: [{ id: primaryContact!.id }, { primaryId: primaryContact!.id }],
+      },
+    });
+
+    const uniqueEmails = Array.from(
+      new Set(
+        allLinkedContacts
+          .filter((x) => x.linkPrecedence === "SECONDARY")
+          .map((c) => c.email)
+      )
+    ).filter((x) => x != null);
+
+    const uniquePhones = Array.from(
+      new Set(
+        allLinkedContacts
+          .filter((x) => x.linkPrecedence === "SECONDARY")
+          .map((c) => c.phoneNumber)
+      )
+    ).filter((x) => x != null);
+
+    const secondaryIds = allLinkedContacts
+      .filter((c) => c.linkPrecedence === "SECONDARY")
+      .map((c) => c.id);
+
+    return res.json({
+      contact: {
+        primaryContactId: primaryContact!.id,
+        emails: uniqueEmails,
+        phoneNumbers: uniquePhones,
+        secondaryContactIds: secondaryIds,
+      },
+    });
   } catch (err) {
     console.error("Database error:", err);
-    res.status(500).json({
-      message: "Internal server error",
-    });
-    return;
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
