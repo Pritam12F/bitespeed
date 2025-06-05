@@ -26,6 +26,7 @@ export const identifyHandler = async (req: Request, res: Response) => {
     });
 
     if (matchingContacts.length === 0) {
+      console.log("No matching contacts found, creating new contact");
       const newContact = await db.contact.create({
         data: {
           email,
@@ -33,7 +34,7 @@ export const identifyHandler = async (req: Request, res: Response) => {
           linkPrecedence: "PRIMARY",
         },
       });
-
+      // No additional logic needed here for new contact creation
       res.json({
         contact: {
           primaryContactId: newContact.id,
@@ -53,12 +54,90 @@ export const identifyHandler = async (req: Request, res: Response) => {
         where: { id: matchingContacts[0].primaryId! },
       }));
 
-    const alreadyExists = matchingContacts.find(
-      (c) => c.email === email && c.phoneNumber === phoneNumber
-    );
+    let alreadyExists;
+
+    if (!email && phoneNumber) {
+      alreadyExists = matchingContacts.find(
+        (c) => c.phoneNumber === phoneNumber
+      );
+    } else if (!phoneNumber && email) {
+      alreadyExists = matchingContacts.find((c) => c.email === email);
+    } else {
+      alreadyExists = matchingContacts.find(
+        (c) => c.email === email && c.phoneNumber === phoneNumber
+      );
+    }
 
     if (!alreadyExists) {
       // Create a secondary contact only if exact match doesn't exist
+      console.log("Creating secondary contact");
+
+      const emailExists = await db.contact.findFirst({
+        where: {
+          email,
+        },
+      });
+
+      const phoneExists = await db.contact.findFirst({
+        where: {
+          phoneNumber,
+        },
+      });
+
+      if (
+        emailExists?.linkPrecedence === "PRIMARY" &&
+        phoneExists?.linkPrecedence === "PRIMARY" &&
+        emailExists.id !== phoneExists.id
+      ) {
+        if (emailExists.createdAt <= phoneExists.createdAt) {
+          await db.contact.update({
+            where: { id: phoneExists.id },
+            data: {
+              linkPrecedence: "SECONDARY",
+              primaryId: emailExists.id,
+            },
+          });
+        } else {
+          await db.contact.update({
+            where: { id: emailExists.id },
+            data: {
+              linkPrecedence: "SECONDARY",
+              primaryId: phoneExists.id,
+            },
+          });
+        }
+
+        res.json({
+          contact: {
+            primaryContactId: primaryContact!.id,
+            emails: new Set([
+              primaryContact!.email,
+              ...Array.from(
+                new Set(
+                  matchingContacts
+                    .filter((c) => c.linkPrecedence === "SECONDARY")
+                    .map((c) => c.email)
+                )
+              ).filter((x) => x != null),
+            ]),
+            phoneNumbers: [
+              primaryContact!.phoneNumber,
+              ...Array.from(
+                new Set(
+                  matchingContacts
+                    .filter((c) => c.linkPrecedence === "SECONDARY")
+                    .map((c) => c.phoneNumber)
+                )
+              ),
+            ].filter((x) => x != null),
+            secondaryContactIds: matchingContacts
+              .filter((c) => c.linkPrecedence === "SECONDARY")
+              .map((c) => c.id),
+          },
+        });
+        return;
+      }
+
       const secondary = await db.contact.create({
         data: {
           email,
@@ -100,22 +179,6 @@ export const identifyHandler = async (req: Request, res: Response) => {
       });
 
       return;
-    }
-
-    const emailContact = await db.contact.findMany({
-      where: {
-        email: email,
-      },
-    });
-
-    const phoneContact = await db.contact.findMany({
-      where: {
-        phoneNumber: phoneNumber,
-      },
-    });
-    //TODO: Implement logic to check if email and phone are from two different primary contacts
-
-    if (emailContact.length > 0 && phoneContact.length > 0) {
     }
 
     const allLinkedContacts = await db.contact.findMany({
@@ -160,6 +223,6 @@ export const identifyHandler = async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("Database error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    res.status(500).json({ message: "Internal server error" });
   }
 };
