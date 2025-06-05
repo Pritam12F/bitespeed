@@ -1,5 +1,5 @@
 import { db } from "../src/db";
-import { LinkPrecedence } from "../src/generated/prisma";
+import { LinkPrecedence } from "./generated/prisma";
 
 async function main() {
   // Clear existing data
